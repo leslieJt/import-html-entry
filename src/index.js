@@ -15,10 +15,6 @@ import {
 	requestIdleCallback,
 } from './utils';
 
-const styleCache = {};
-const scriptCache = {};
-const embedHTMLCache = {};
-
 if (!window.fetch) {
 	throw new Error('[import-html-entry] Here is no "fetch" on the window env, you need to polyfill it');
 }
@@ -27,6 +23,26 @@ const defaultFetch = window.fetch.bind(window);
 function defaultGetTemplate(tpl) {
 	return tpl;
 }
+
+function withCache() {
+	const cache = {};
+
+	return (key, fn) => {
+		if (cache[key]) return cache[key];
+
+		const promise = fn();
+
+		promise.then(() => {
+			cache[key] = promise;
+		})
+
+		return promise;
+	}
+}
+
+const withStyleCache = withCache();
+const withScriptCache = withCache();
+const withEmbedHTMLCache = withCache();
 
 /**
  * convert external css link to inline style for performance optimization
@@ -72,10 +88,8 @@ export function getExternalStyleSheets(styles, fetch = defaultFetch) {
 				return getInlineCode(styleLink);
 			} else {
 				// external styles
-				return styleCache[styleLink] ||
-					(styleCache[styleLink] = fetch(styleLink).then(response => response.text()));
+				return withStyleCache(styleLink, () => fetch(styleLink).then(response => response.text()));
 			}
-
 		},
 	));
 }
@@ -84,20 +98,19 @@ export function getExternalStyleSheets(styles, fetch = defaultFetch) {
 export function getExternalScripts(scripts, fetch = defaultFetch, errorCallback = () => {
 }) {
 
-	const fetchScript = scriptUrl => scriptCache[scriptUrl] ||
-		(scriptCache[scriptUrl] = fetch(scriptUrl).then(response => {
-			// usually browser treats 4xx and 5xx response of script loading as an error and will fire a script error event
-			// https://stackoverflow.com/questions/5625420/what-http-headers-responses-trigger-the-onerror-handler-on-a-script-tag/5625603
-			if (response.status >= 400) {
-				errorCallback();
-				throw new Error(`${scriptUrl} load failed with status ${response.status}`);
-			}
-
-			return response.text();
-		}).catch(e => {
+	const fetchScript = scriptUrl => withScriptCache(scriptUrl, () => fetch(scriptUrl).then(response => {
+		// usually browser treats 4xx and 5xx response of script loading as an error and will fire a script error event
+		// https://stackoverflow.com/questions/5625420/what-http-headers-responses-trigger-the-onerror-handler-on-a-script-tag/5625603
+		if (response.status >= 400) {
 			errorCallback();
-			throw e;
-		}));
+			throw new Error(`${scriptUrl} load failed with status ${response.status}`);
+		}
+
+		return response.text();
+	}).catch(e => {
+		errorCallback();
+		throw e;
+	}));
 
 	return Promise.all(scripts.map(script => {
 
@@ -261,7 +274,7 @@ export default function importHTML(url, opts = {}) {
 		getTemplate = opts.getTemplate || defaultGetTemplate;
 	}
 
-	return embedHTMLCache[url] || (embedHTMLCache[url] = fetch(url)
+	return withEmbedHTMLCache(url, () => fetch(url)
 		.then(response => readResAsString(response, autoDecodeResponse))
 		.then(html => {
 
